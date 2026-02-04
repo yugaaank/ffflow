@@ -1,6 +1,6 @@
-# ffx
+# ffflow
 
-ffx is a commercial-grade, open-source (FOSS) terminal application that streamlines professional media processing with ffmpeg. It combines a focused TUI with a clean command surface for repeatable encoding and probing workflows that can be used in studios, pipelines, and internal tooling.
+ffflow is a commercial-grade, open-source (FOSS) terminal application that streamlines professional media processing with ffmpeg. It combines a focused TUI with a clean command surface for repeatable encoding and probing workflows that can be used in studios, pipelines, and internal tooling.
 
 ## What it does
 

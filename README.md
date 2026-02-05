@@ -45,6 +45,38 @@ Pass raw ffmpeg args:
 ffmpeg -i input.mp4 -c:v libx264 -preset fast output.mp4
 ```
 
+Programmatic usage (events):
+
+```rust
+use ffx::core::command::FfmpegCommand;
+use ffx::core::event::FfmpegEvent;
+use ffx::core::{formatter, run_with_events};
+
+let cmd = FfmpegCommand {
+    inputs: vec!["input.mp4".to_string()],
+    output: "output.mp4".to_string(),
+    video_codec: Some("libx264".to_string()),
+    audio_codec: None,
+    preset: Some("medium".to_string()),
+    extra_args: vec![],
+};
+
+let rx = run_with_events(cmd);
+for event in rx {
+    match event {
+        FfmpegEvent::Input(info) => println!("{}", formatter::format_input_line(&info)),
+        FfmpegEvent::Output(info) => println!("{}", formatter::format_output_line(&info)),
+        FfmpegEvent::Progress(update) => {
+            if let Some(line) = formatter::format_progress_line(&update, None) {
+                println!("{line}");
+            }
+        }
+        FfmpegEvent::Summary(summary) => println!("{}", formatter::format_summary_line(&summary)),
+        FfmpegEvent::Error(message) => eprintln!("error: {message}"),
+    }
+}
+```
+
 ## Requirements
 
 - Rust toolchain (edition 2024)

@@ -14,8 +14,15 @@ use ratatui::Terminal;
 use crate::cli::{self, Commands};
 use crate::core;
 use crate::core::error::FfxError;
-use crate::core::job::{Job, JobStatus};
-use crate::core::progress::ProgressUpdate;
+use crate::core::event::FfmpegEvent;
+use crate::core::formatter::{
+    format_duration, format_input_line, format_output_line, format_progress_line,
+    format_summary_line,
+};
+use crate::core::job::JobStatus;
+use crate::core::metadata::{InputInfo, OutputInfo};
+use crate::core::progress::{parse_ffmpeg_time, FfmpegProgress};
+use crate::core::summary::EncodeSummary;
 
 struct TerminalGuard;
 
@@ -46,7 +53,10 @@ impl Drop for TerminalGuard {
 struct AppState {
     input: String,
     history: Vec<String>,
-    progress: Option<ProgressUpdate>,
+    progress: Option<FfmpegProgress>,
+    input_info: Option<InputInfo>,
+    output_info: Option<OutputInfo>,
+    summary: Option<EncodeSummary>,
     job_status: Option<JobStatus>,
     last_error: Option<String>,
     should_quit: bool,
@@ -54,7 +64,7 @@ struct AppState {
     scroll_offset: usize,
     view_lines: usize,
     tick: u64,
-    duration_seconds: Option<f64>,
+    duration: Option<Duration>,
     last_progress_line: Option<String>,
     progress_log_counter: u64,
 }
@@ -69,6 +79,9 @@ impl AppState {
             input: String::new(),
             history,
             progress: None,
+            input_info: None,
+            output_info: None,
+            summary: None,
             job_status: None,
             last_error: None,
             should_quit: false,
@@ -76,7 +89,7 @@ impl AppState {
             scroll_offset: 0,
             view_lines: 1,
             tick: 0,
-            duration_seconds: None,
+            duration: None,
             last_progress_line: None,
             progress_log_counter: 0,
         }
@@ -92,19 +105,10 @@ impl AppState {
         self.clamp_scroll();
     }
 
-    fn update_job(&mut self, result: Result<Job, FfxError>) {
+    fn update_job(&mut self, status: JobStatus) {
         self.job_running = false;
-        match result {
-            Ok(job) => {
-                self.job_status = Some(job.status);
-                self.push_history(format!("Job {} finished: {:?}", job.id, job.status));
-            }
-            Err(err) => {
-                self.job_status = Some(JobStatus::Failed);
-                self.last_error = Some(err.to_string());
-                self.push_history(format!("error: {err}"));
-            }
-        }
+        self.job_status = Some(status);
+        self.push_history(format!("Job finished: {status:?}"));
     }
 
     fn set_view_lines(&mut self, lines: usize) {
@@ -149,32 +153,49 @@ pub fn run() -> Result<(), FfxError> {
         message: e.to_string(),
     })?;
 
-    let (progress_tx, progress_rx) = mpsc::channel::<ProgressUpdate>();
-    let (log_tx, log_rx) = mpsc::channel::<String>();
-    let (job_tx, job_rx) = mpsc::channel::<Result<Job, FfxError>>();
+    let (event_tx, event_rx) = mpsc::channel::<FfmpegEvent>();
+    let (job_tx, job_rx) = mpsc::channel::<JobStatus>();
 
     let mut app = AppState::new();
 
     loop {
-        while let Ok(update) = progress_rx.try_recv() {
-            app.progress = Some(update.clone());
-            if let Some(line) = format_progress_line(&update) {
-                app.last_progress_line = Some(line.clone());
-                app.progress_log_counter = app.progress_log_counter.wrapping_add(1);
-                if app.progress_log_counter % 25 == 0 {
-                    app.push_history(line);
+        while let Ok(event) = event_rx.try_recv() {
+            match event {
+                FfmpegEvent::Progress(update) => {
+                    app.progress = Some(update.clone());
+                    if let Some(line) = format_progress_line(&update, app.duration) {
+                        app.last_progress_line = Some(line.clone());
+                        app.progress_log_counter = app.progress_log_counter.wrapping_add(1);
+                        if app.progress_log_counter % 25 == 0 {
+                            app.push_history(line);
+                        }
+                    }
+                }
+                FfmpegEvent::Input(info) => {
+                    app.input_info = Some(info.clone());
+                    if let Some(duration) = info.duration {
+                        app.duration = Some(duration);
+                    }
+                    app.push_history(format_input_line(&info));
+                }
+                FfmpegEvent::Output(info) => {
+                    app.output_info = Some(info.clone());
+                    app.push_history(format_output_line(&info));
+                }
+                FfmpegEvent::Summary(summary) => {
+                    app.summary = Some(summary.clone());
+                    app.push_history(format_summary_line(&summary));
+                }
+                FfmpegEvent::Error(message) => {
+                    app.last_error = Some(message.clone());
+                    app.job_status = Some(JobStatus::Failed);
+                    app.push_history(format!("error: {message}"));
                 }
             }
         }
 
-        while let Ok(line) = log_rx.try_recv() {
-            if core::progress::parse_progress_line(&line).is_none() && should_log_line(&line) {
-                app.push_history(line);
-            }
-        }
-
-        while let Ok(result) = job_rx.try_recv() {
-            app.update_job(result);
+        while let Ok(status) = job_rx.try_recv() {
+            app.update_job(status);
         }
 
         let size = terminal.size().map_err(|e| FfxError::InvalidCommand {
@@ -236,7 +257,7 @@ pub fn run() -> Result<(), FfxError> {
                         let line = app.input.trim().to_string();
                         app.input.clear();
                         if !line.is_empty() {
-                            handle_line(&mut app, line, progress_tx.clone(), log_tx.clone(), job_tx.clone());
+                            handle_line(&mut app, line, event_tx.clone(), job_tx.clone());
                         }
                     }
                     KeyCode::PageUp => {
@@ -278,9 +299,8 @@ pub fn run() -> Result<(), FfxError> {
 fn handle_line(
     app: &mut AppState,
     line: String,
-    progress_tx: mpsc::Sender<ProgressUpdate>,
-    log_tx: mpsc::Sender<String>,
-    job_tx: mpsc::Sender<Result<Job, FfxError>>,
+    event_tx: mpsc::Sender<FfmpegEvent>,
+    job_tx: mpsc::Sender<JobStatus>,
 ) {
     let trimmed = line.trim();
     if !app.history.is_empty() {
@@ -328,14 +348,27 @@ fn handle_line(
                     app.push_history("error: ffmpeg requires arguments".to_string());
                     return;
                 }
-                app.duration_seconds = parse_duration_from_args(&args);
+                app.duration = parse_duration_from_args(&args);
                 app.job_running = true;
                 app.job_status = Some(JobStatus::Running);
                 app.progress = None;
                 app.last_progress_line = None;
+                app.last_error = None;
                 std::thread::spawn(move || {
-                    let result = core::run_args_with_progress(args, progress_tx, Some(log_tx));
-                    let _ = job_tx.send(result);
+                    let rx = core::runner::run_args_with_events(args);
+                    let mut had_error = false;
+                    for event in rx {
+                        if matches!(event, FfmpegEvent::Error(_)) {
+                            had_error = true;
+                        }
+                        let _ = event_tx.send(event);
+                    }
+                    let status = if had_error {
+                        JobStatus::Failed
+                    } else {
+                        JobStatus::Finished
+                    };
+                    let _ = job_tx.send(status);
                 });
             }
             Err(err) => {
@@ -348,26 +381,52 @@ fn handle_line(
     match cli::parse_line(trimmed) {
         Ok(Commands::Encode(args)) => {
             let cmd = cli::encode_args_to_command(args);
-            app.duration_seconds = parse_duration_from_args(&cmd.extra_args);
+            app.duration = parse_duration_from_args(&cmd.extra_args);
             app.job_running = true;
             app.job_status = Some(JobStatus::Running);
             app.progress = None;
             app.last_progress_line = None;
+            app.last_error = None;
             std::thread::spawn(move || {
-                let result = core::run_with_progress(cmd, progress_tx, Some(log_tx));
-                let _ = job_tx.send(result);
+                let rx = core::run_with_events(cmd);
+                let mut had_error = false;
+                for event in rx {
+                    if matches!(event, FfmpegEvent::Error(_)) {
+                        had_error = true;
+                    }
+                    let _ = event_tx.send(event);
+                }
+                let status = if had_error {
+                    JobStatus::Failed
+                } else {
+                    JobStatus::Finished
+                };
+                let _ = job_tx.send(status);
             });
         }
         Ok(Commands::Probe(args)) => {
             let cmd = cli::probe_args_to_command(args);
-            app.duration_seconds = parse_duration_from_args(&cmd.extra_args);
+            app.duration = parse_duration_from_args(&cmd.extra_args);
             app.job_running = true;
             app.job_status = Some(JobStatus::Running);
             app.progress = None;
             app.last_progress_line = None;
+            app.last_error = None;
             std::thread::spawn(move || {
-                let result = core::run_with_progress(cmd, progress_tx, Some(log_tx));
-                let _ = job_tx.send(result);
+                let rx = core::run_with_events(cmd);
+                let mut had_error = false;
+                for event in rx {
+                    if matches!(event, FfmpegEvent::Error(_)) {
+                        had_error = true;
+                    }
+                    let _ = event_tx.send(event);
+                }
+                let status = if had_error {
+                    JobStatus::Failed
+                } else {
+                    JobStatus::Finished
+                };
+                let _ = job_tx.send(status);
             });
         }
         Ok(Commands::Presets) => {
@@ -392,12 +451,12 @@ fn render_header(app: &AppState, width: usize) -> Paragraph<'static> {
 
     let progress = match &app.progress {
         Some(update) => format!(
-            "time={} frame={} speed={}",
-            update.time.clone().unwrap_or_default(),
-            update.frame.map(|v| v.to_string()).unwrap_or_default(),
-            update.speed.clone().unwrap_or_default()
+            "time={} frame={} speed={}x",
+            format_duration(update.time),
+            update.frame,
+            update.speed
         ),
-        None => "time= frame= speed=".to_string(),
+        None => "time=--:--:-- frame= speed=".to_string(),
     };
 
     let bar_width = width.saturating_sub(30).clamp(10, 40);
@@ -430,8 +489,10 @@ fn render_progress_bar(app: &AppState, width: usize) -> String {
         return bar;
     }
 
-    if let (Some(update), Some(total)) = (&app.progress, app.duration_seconds) {
-        if let Some(elapsed) = update.time.as_deref().and_then(parse_ffmpeg_time) {
+    if let (Some(update), Some(total)) = (&app.progress, app.duration) {
+        let elapsed = update.time.as_secs_f64();
+        let total = total.as_secs_f64();
+        if total > 0.0 {
             let ratio = (elapsed / total).clamp(0.0, 1.0);
             let filled = ((ratio * width as f64).round() as usize).min(width);
             for idx in 0..width {
@@ -484,44 +545,17 @@ fn render_history(app: &AppState, height: usize, width: usize) -> Paragraph<'sta
         .wrap(Wrap { trim: false })
 }
 
-fn should_log_line(line: &str) -> bool {
-    let trimmed = line.trim();
-    if trimmed.is_empty() {
-        return false;
-    }
-
-    let prefixes = [
-        "ffmpeg version",
-        "built with",
-        "configuration:",
-        "libavutil",
-        "libavcodec",
-        "libavformat",
-        "libavdevice",
-        "libavfilter",
-        "libswscale",
-        "libswresample",
-    ];
-
-    for prefix in prefixes {
-        if trimmed.starts_with(prefix) {
-            return false;
-        }
-    }
-
-    true
-}
-
-fn parse_duration_from_args(args: &[String]) -> Option<f64> {
+fn parse_duration_from_args(args: &[String]) -> Option<Duration> {
     let mut idx = 0;
     while idx < args.len() {
         if args[idx] == "-t" {
             if let Some(value) = args.get(idx + 1) {
                 if let Ok(seconds) = value.parse::<f64>() {
-                    return Some(seconds);
+                    let micros = (seconds * 1_000_000.0).round().max(0.0) as u64;
+                    return Some(Duration::from_micros(micros));
                 }
-                if let Some(seconds) = parse_ffmpeg_time(value) {
-                    return Some(seconds);
+                if let Some(duration) = parse_ffmpeg_time(value) {
+                    return Some(duration);
                 }
             }
         }
@@ -529,40 +563,11 @@ fn parse_duration_from_args(args: &[String]) -> Option<f64> {
             let value = &args[idx][pos + "duration=".len()..];
             let value = value.split(':').next().unwrap_or(value);
             if let Ok(seconds) = value.parse::<f64>() {
-                return Some(seconds);
+                let micros = (seconds * 1_000_000.0).round().max(0.0) as u64;
+                return Some(Duration::from_micros(micros));
             }
         }
         idx += 1;
     }
     None
-}
-
-fn parse_ffmpeg_time(value: &str) -> Option<f64> {
-    let mut parts = value.split(':').collect::<Vec<_>>();
-    if parts.len() == 1 {
-        return parts[0].parse::<f64>().ok();
-    }
-    if parts.len() == 2 {
-        let minutes = parts[0].parse::<f64>().ok()?;
-        let seconds = parts[1].parse::<f64>().ok()?;
-        return Some(minutes * 60.0 + seconds);
-    }
-    if parts.len() == 3 {
-        let hours = parts[0].parse::<f64>().ok()?;
-        let minutes = parts[1].parse::<f64>().ok()?;
-        let seconds = parts[2].parse::<f64>().ok()?;
-        return Some(hours * 3600.0 + minutes * 60.0 + seconds);
-    }
-    None
-}
-
-fn format_progress_line(update: &ProgressUpdate) -> Option<String> {
-    let time = update.time.clone().unwrap_or_default();
-    let frame = update.frame.map(|v| v.to_string()).unwrap_or_default();
-    let speed = update.speed.clone().unwrap_or_default();
-    if time.is_empty() && frame.is_empty() && speed.is_empty() {
-        None
-    } else {
-        Some(format!("progress: time={time} frame={frame} speed={speed}"))
-    }
 }

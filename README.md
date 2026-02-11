@@ -21,8 +21,8 @@ Built with **Rust**, it emphasizes reliability, observability, and ease of use f
 Ensure you have [Rust](https://www.rust-lang.org/tools/install) and `ffmpeg` installed.
 
 ```bash
-git clone https://github.com/yourusername/ffx.git
-cd ffx
+git clone https://github.com/yugaaank/ffflow
+cd ffflow
 cargo install --path .
 ```
 

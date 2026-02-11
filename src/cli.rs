@@ -4,6 +4,14 @@ use crate::core::command::FfmpegCommand;
 
 #[derive(Debug, Parser)]
 #[command(name = "ffx", version, about = "Professional ffmpeg wrapper")]
+pub struct SystemCli {
+    /// Path to a .flw file containing commands
+    #[arg(value_name = "FILE")]
+    pub file: Option<std::path::PathBuf>,
+}
+
+#[derive(Debug, Parser)]
+#[command(name = "ffx", version, about = "Professional ffmpeg wrapper")]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,

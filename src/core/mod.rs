@@ -3,6 +3,7 @@ use std::time::Instant;
 
 pub mod command;
 pub mod error;
+pub mod batch;
 pub mod job;
 pub mod progress;
 pub mod metadata;
@@ -58,6 +59,6 @@ pub fn run(command: FfmpegCommand) -> Result<Job, FfxError> {
     }
 }
 
-pub fn run_with_events(command: FfmpegCommand) -> std::sync::mpsc::Receiver<event::FfmpegEvent> {
+pub fn run_with_events(command: FfmpegCommand) -> (std::sync::mpsc::Receiver<event::FfmpegEvent>, std::sync::mpsc::Sender<String>) {
     runner::run_with_events(command)
 }

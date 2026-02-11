@@ -67,14 +67,19 @@ struct AppState {
     duration: Option<Duration>,
     last_progress_line: Option<String>,
     progress_log_counter: u64,
+    stdin_tx: Option<mpsc::Sender<String>>,
+    job_queue: std::collections::VecDeque<String>,
 }
 
 const DIVIDER_MARKER: &str = "<divider>";
 
 impl AppState {
-    fn new() -> Self {
+    fn new(queue: Vec<String>) -> Self {
         let mut history = Vec::new();
         history.push("Welcome to ffx. Type 'help' for commands.".to_string());
+        if !queue.is_empty() {
+            history.push(format!("Loaded {} jobs from batch file.", queue.len()));
+        }
         Self {
             input: String::new(),
             history,
@@ -92,6 +97,8 @@ impl AppState {
             duration: None,
             last_progress_line: None,
             progress_log_counter: 0,
+            stdin_tx: None,
+            job_queue: std::collections::VecDeque::from(queue),
         }
     }
 
@@ -108,6 +115,7 @@ impl AppState {
     fn update_job(&mut self, status: JobStatus) {
         self.job_running = false;
         self.job_status = Some(status);
+        self.stdin_tx = None;
         self.push_history(format!("Job finished: {status:?}"));
     }
 
@@ -145,7 +153,7 @@ impl AppState {
     }
 }
 
-pub fn run() -> Result<(), FfxError> {
+pub fn run(initial_queue: Vec<String>) -> Result<(), FfxError> {
     let _guard = TerminalGuard::enter()?;
     let stdout = io::stdout();
     let backend = CrosstermBackend::new(stdout);
@@ -156,7 +164,7 @@ pub fn run() -> Result<(), FfxError> {
     let (event_tx, event_rx) = mpsc::channel::<FfmpegEvent>();
     let (job_tx, job_rx) = mpsc::channel::<JobStatus>();
 
-    let mut app = AppState::new();
+    let mut app = AppState::new(initial_queue);
 
     loop {
         while let Ok(event) = event_rx.try_recv() {
@@ -191,11 +199,22 @@ pub fn run() -> Result<(), FfxError> {
                     app.job_status = Some(JobStatus::Failed);
                     app.push_history(format!("error: {message}"));
                 }
+                FfmpegEvent::Prompt(message) => {
+                    app.job_status = Some(JobStatus::AwaitingConfirmation);
+                    app.push_history(format!("PROMPT: {message}"));
+                    app.push_history(">> Press 'y' to confirm or 'n' to abort.");
+                }
             }
         }
 
         while let Ok(status) = job_rx.try_recv() {
             app.update_job(status);
+        }
+
+        if !app.job_running && app.job_status != Some(JobStatus::AwaitingConfirmation) {
+            if let Some(next_cmd) = app.job_queue.pop_front() {
+                handle_line(&mut app, next_cmd, event_tx.clone(), job_tx.clone());
+            }
         }
 
         let size = terminal.size().map_err(|e| FfxError::InvalidCommand {
@@ -224,7 +243,13 @@ pub fn run() -> Result<(), FfxError> {
                 let history = render_history(&app, layout[1].height as usize, layout[1].width as usize);
                 frame.render_widget(history, layout[1]);
 
-                let input = Paragraph::new(app.input.as_str())
+                let input_text = if app.job_status == Some(JobStatus::AwaitingConfirmation) {
+                    format!("{} (y/n)", app.input)
+                } else {
+                    app.input.clone()
+                };
+
+                let input = Paragraph::new(input_text.as_str())
                     .block(Block::default().title("Input").borders(Borders::ALL))
                     .wrap(Wrap { trim: false });
                 frame.render_widget(input, layout[2]);
@@ -243,47 +268,73 @@ pub fn run() -> Result<(), FfxError> {
             if let Event::Key(key) = event::read().map_err(|e| FfxError::InvalidCommand {
                 message: e.to_string(),
             })? {
-                match key.code {
-                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        app.should_quit = true;
-                    }
-                    KeyCode::Char(ch) => {
-                        app.input.push(ch);
-                    }
-                    KeyCode::Backspace => {
-                        app.input.pop();
-                    }
-                    KeyCode::Enter => {
-                        let line = app.input.trim().to_string();
-                        app.input.clear();
-                        if !line.is_empty() {
-                            handle_line(&mut app, line, event_tx.clone(), job_tx.clone());
+                if let Some(JobStatus::AwaitingConfirmation) = app.job_status {
+                    match key.code {
+                         KeyCode::Char('y') | KeyCode::Char('Y') => {
+                            if let Some(tx) = &app.stdin_tx {
+                                let _ = tx.send("y\n".to_string());
+                            }
+                            app.job_status = Some(JobStatus::Running);
+                            app.push_history(">> Sent: y");
                         }
+                        KeyCode::Char('n') | KeyCode::Char('N') => {
+                            if let Some(tx) = &app.stdin_tx {
+                                let _ = tx.send("n\n".to_string());
+                            }
+                            app.job_status = Some(JobStatus::Running);
+                             app.push_history(">> Sent: n");
+                        }
+                        KeyCode::Esc => {
+                            app.should_quit = true;
+                        }
+                        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            app.should_quit = true;
+                        }
+                        _ => {}
                     }
-                    KeyCode::PageUp => {
-                        let step = app.view_lines.saturating_sub(1).max(1);
-                        app.scroll_up(step);
+                } else {
+                    match key.code {
+                        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            app.should_quit = true;
+                        }
+                        KeyCode::Char(ch) => {
+                            app.input.push(ch);
+                        }
+                        KeyCode::Backspace => {
+                            app.input.pop();
+                        }
+                        KeyCode::Enter => {
+                            let line = app.input.trim().to_string();
+                            app.input.clear();
+                            if !line.is_empty() {
+                                handle_line(&mut app, line, event_tx.clone(), job_tx.clone());
+                            }
+                        }
+                        KeyCode::PageUp => {
+                            let step = app.view_lines.saturating_sub(1).max(1);
+                            app.scroll_up(step);
+                        }
+                        KeyCode::PageDown => {
+                            let step = app.view_lines.saturating_sub(1).max(1);
+                            app.scroll_down(step);
+                        }
+                        KeyCode::Up => {
+                            app.scroll_up(1);
+                        }
+                        KeyCode::Down => {
+                            app.scroll_down(1);
+                        }
+                        KeyCode::Home => {
+                            app.scroll_top();
+                        }
+                        KeyCode::End => {
+                            app.scroll_bottom();
+                        }
+                        KeyCode::Esc => {
+                            app.should_quit = true;
+                        }
+                        _ => {}
                     }
-                    KeyCode::PageDown => {
-                        let step = app.view_lines.saturating_sub(1).max(1);
-                        app.scroll_down(step);
-                    }
-                    KeyCode::Up => {
-                        app.scroll_up(1);
-                    }
-                    KeyCode::Down => {
-                        app.scroll_down(1);
-                    }
-                    KeyCode::Home => {
-                        app.scroll_top();
-                    }
-                    KeyCode::End => {
-                        app.scroll_bottom();
-                    }
-                    KeyCode::Esc => {
-                        app.should_quit = true;
-                    }
-                    _ => {}
                 }
             }
         }
@@ -324,8 +375,25 @@ fn handle_line(
         app.push_history("  encode -i <input> -o <output> [--vcodec ...] [--acodec ...] [--preset ...]".to_string());
         app.push_history("  probe -i <input>".to_string());
         app.push_history("  presets".to_string());
+        app.push_history("  presets".to_string());
         app.push_history("  ffmpeg <args...>".to_string());
+        app.push_history("  batch <file.flw>".to_string());
         app.push_history("  clear / exit".to_string());
+        return;
+    }
+
+    if let Some(path_str) = trimmed.strip_prefix("batch ") {
+        let path = std::path::Path::new(path_str.trim());
+        match core::batch::parse_flw_file(path) {
+            Ok(commands) => {
+                let count = commands.len();
+                app.job_queue.extend(commands);
+                app.push_history(format!("Loaded {} jobs from '{}'.", count, path.display()));
+            }
+            Err(e) => {
+                app.push_history(format!("error reading batch file: {}", e));
+            }
+        }
         return;
     }
 
@@ -354,8 +422,11 @@ fn handle_line(
                 app.progress = None;
                 app.last_progress_line = None;
                 app.last_error = None;
+
+                let (rx, tx) = core::runner::run_args_with_events(args);
+                app.stdin_tx = Some(tx);
+
                 std::thread::spawn(move || {
-                    let rx = core::runner::run_args_with_events(args);
                     let mut had_error = false;
                     for event in rx {
                         if matches!(event, FfmpegEvent::Error(_)) {
@@ -387,8 +458,11 @@ fn handle_line(
             app.progress = None;
             app.last_progress_line = None;
             app.last_error = None;
+            
+            let (rx, tx) = core::run_with_events(cmd);
+            app.stdin_tx = Some(tx);
+
             std::thread::spawn(move || {
-                let rx = core::run_with_events(cmd);
                 let mut had_error = false;
                 for event in rx {
                     if matches!(event, FfmpegEvent::Error(_)) {
@@ -412,8 +486,11 @@ fn handle_line(
             app.progress = None;
             app.last_progress_line = None;
             app.last_error = None;
+
+            let (rx, tx) = core::run_with_events(cmd);
+            app.stdin_tx = Some(tx);
+
             std::thread::spawn(move || {
-                let rx = core::run_with_events(cmd);
                 let mut had_error = false;
                 for event in rx {
                     if matches!(event, FfmpegEvent::Error(_)) {
@@ -446,6 +523,7 @@ fn render_header(app: &AppState, width: usize) -> Paragraph<'static> {
         Some(JobStatus::Running) => "Running",
         Some(JobStatus::Finished) => "Finished",
         Some(JobStatus::Failed) => "Failed",
+        Some(JobStatus::AwaitingConfirmation) => "Awaiting Confirmation",
         None => "Idle",
     };
 

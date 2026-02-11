@@ -6,6 +6,7 @@ pub enum JobStatus {
     Running,
     Finished,
     Failed,
+    AwaitingConfirmation,
 }
 
 #[derive(Debug, Clone)]

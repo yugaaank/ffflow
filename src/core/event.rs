@@ -10,6 +10,7 @@ pub enum LogLevel {
     Summary,
     Warning,
     Error,
+    Prompt,
     Noise,
 }
 
@@ -20,6 +21,7 @@ pub enum FfmpegEvent {
     Output(OutputInfo),
     Summary(EncodeSummary),
     Error(String),
+    Prompt(String),
 }
 
 pub fn classify_log_line(line: &str) -> LogLevel {
@@ -39,6 +41,10 @@ pub fn classify_log_line(line: &str) -> LogLevel {
     }
     if trimmed.contains("Lsize=") && trimmed.contains("bitrate=") {
         return LogLevel::Summary;
+    }
+
+    if trimmed.contains("Overwrite?") && trimmed.contains("[y/N]") {
+        return LogLevel::Prompt;
     }
 
     let lower = trimmed.to_ascii_lowercase();

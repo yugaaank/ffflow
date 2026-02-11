@@ -116,16 +116,17 @@ fn has_progress_stdout(args: &[String]) -> bool {
         .any(|pair| pair[0] == "-progress" && pair[1].starts_with("pipe:1"))
 }
 
-pub fn run_with_events(command: FfmpegCommand) -> Receiver<FfmpegEvent> {
+pub fn run_with_events(command: FfmpegCommand) -> (Receiver<FfmpegEvent>, Sender<String>) {
     run_args_with_events(command.to_args())
 }
 
-pub fn run_args_with_events(args: Vec<String>) -> Receiver<FfmpegEvent> {
+pub fn run_args_with_events(args: Vec<String>) -> (Receiver<FfmpegEvent>, Sender<String>) {
     let (event_tx, event_rx) = mpsc::channel::<FfmpegEvent>();
+    let (stdin_tx, stdin_rx) = mpsc::channel::<String>();
 
     thread::spawn(move || {
         let mut cmd = Command::new("ffmpeg");
-        cmd.args(&args).stderr(Stdio::piped());
+        cmd.args(&args).stderr(Stdio::piped()).stdin(Stdio::piped());
 
         if has_progress_stdout(&args) {
             cmd.stdout(Stdio::piped());
@@ -140,6 +141,20 @@ pub fn run_args_with_events(args: Vec<String>) -> Receiver<FfmpegEvent> {
                 return;
             }
         };
+
+        if let Some(mut stdin) = child.stdin.take() {
+            thread::spawn(move || {
+                use std::io::Write;
+                for input in stdin_rx {
+                    if let Err(_) = stdin.write_all(input.as_bytes()) {
+                        break;
+                    }
+                    if let Err(_) = stdin.flush() {
+                        break;
+                    }
+                }
+            });
+        }
 
         let stderr = match child.stderr.take() {
             Some(stderr) => stderr,
@@ -199,7 +214,9 @@ pub fn run_args_with_events(args: Vec<String>) -> Receiver<FfmpegEvent> {
 
                     let level = classify_log_line(&line);
                     if matches!(level, LogLevel::Error) {
-                        let _ = event_tx.send(FfmpegEvent::Error(line));
+                        let _ = event_tx.send(FfmpegEvent::Error(line.clone()));
+                    } else if matches!(level, LogLevel::Prompt) {
+                        let _ = event_tx.send(FfmpegEvent::Prompt(line));
                     }
                 }
             }
@@ -218,7 +235,7 @@ pub fn run_args_with_events(args: Vec<String>) -> Receiver<FfmpegEvent> {
         }
     });
 
-    event_rx
+    (event_rx, stdin_tx)
 }
 
 fn spawn_line_reader<R: Read + Send + 'static>(

@@ -1,4 +1,4 @@
-# ffflow (Foss Flow)
+# ffflow (ffmpeg Flow)
 
 **ffflow** is a powerful, open-source terminal user interface (TUI) for FFmpeg. It is designed to streamline professional media workflows by providing a clean, interactive surface for running complex encoding, probing, and filtering jobs.
 

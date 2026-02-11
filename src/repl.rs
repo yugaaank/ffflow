@@ -12,7 +12,7 @@ pub fn run() -> Result<(), FfxError> {
 
     loop {
         line.clear();
-        print!("ffx> ");
+        print!("ffflow> ");
         stdout
             .flush()
             .map_err(|e| FfxError::InvalidCommand {
@@ -39,7 +39,7 @@ pub fn run() -> Result<(), FfxError> {
         }
 
         let mut argv = Vec::new();
-        argv.push("ffx".to_string());
+        argv.push("ffflow".to_string());
         argv.extend(trimmed.split_whitespace().map(|s| s.to_string()));
 
         match Cli::try_parse_from(argv) {

@@ -76,7 +76,7 @@ const DIVIDER_MARKER: &str = "<divider>";
 impl AppState {
     fn new(queue: Vec<String>) -> Self {
         let mut history = Vec::new();
-        history.push("Welcome to ffx. Type 'help' for commands.".to_string());
+        history.push("Welcome to ffflow. Type 'help' for commands.".to_string());
         if !queue.is_empty() {
             history.push(format!("Loaded {} jobs from batch file.", queue.len()));
         }
@@ -550,7 +550,7 @@ fn render_header(app: &AppState, width: usize) -> Paragraph<'static> {
     ];
 
     Paragraph::new(text)
-        .block(Block::default().title("ffx").borders(Borders::ALL))
+        .block(Block::default().title("ffflow").borders(Borders::ALL))
         .wrap(Wrap { trim: true })
 }
 

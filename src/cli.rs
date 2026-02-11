@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand};
 use crate::core::command::FfmpegCommand;
 
 #[derive(Debug, Parser)]
-#[command(name = "ffx", version, about = "Professional ffmpeg wrapper")]
+#[command(name = "ffflow", version, about = "Professional ffmpeg wrapper")]
 pub struct SystemCli {
     /// Path to a .flw file containing commands
     #[arg(value_name = "FILE")]
@@ -11,7 +11,7 @@ pub struct SystemCli {
 }
 
 #[derive(Debug, Parser)]
-#[command(name = "ffx", version, about = "Professional ffmpeg wrapper")]
+#[command(name = "ffflow", version, about = "Professional ffmpeg wrapper")]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
@@ -70,7 +70,7 @@ pub fn probe_args_to_command(args: ProbeArgs) -> FfmpegCommand {
 
 pub fn parse_line(line: &str) -> Result<Commands, String> {
     let mut argv = Vec::new();
-    argv.push("ffx".to_string());
+    argv.push("ffflow".to_string());
 
     let tokens = shell_words::split(line).map_err(|err| err.to_string())?;
     argv.extend(tokens);

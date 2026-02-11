@@ -1,6 +1,6 @@
-# ffx (Foss Flow X)
+# ffflow (Foss Flow)
 
-**ffx** is a powerful, open-source terminal user interface (TUI) for FFmpeg. It is designed to streamline professional media workflows by providing a clean, interactive surface for running complex encoding, probing, and filtering jobs.
+**ffflow** is a powerful, open-source terminal user interface (TUI) for FFmpeg. It is designed to streamline professional media workflows by providing a clean, interactive surface for running complex encoding, probing, and filtering jobs.
 
 Built with **Rust**, it emphasizes reliability, observability, and ease of use for both casual users and media engineers.
 
@@ -30,7 +30,7 @@ cargo install --path .
 
 Start the TUI:
 ```bash
-ffx
+ffflow
 ```
 
 ### Basic Commands
@@ -69,15 +69,15 @@ ffmpeg -i input.mp4 \
 **Run it:**
 From the terminal:
 ```bash
-ffx jobs.flw
+ffflow jobs.flw
 ```
-Or interactively inside `ffx`:
+Or interactively inside `ffflow`:
 ```bash
 batch jobs.flw
 ```
 
 ## ⚡ Interactive Input
-`ffx` intelligently detects when FFmpeg asks for confirmation (e.g., file overwrite) and allows you to respond with `y` or `n` directly from the TUI, preventing jobs from hanging in the background.
+`ffflow` intelligently detects when FFmpeg asks for confirmation (e.g., file overwrite) and allows you to respond with `y` or `n` directly from the TUI, preventing jobs from hanging in the background.
 
 ## ⚠️ Known Limitations
 - **Shell Features**: Piping (`|`), redirection (`>`), and globbing (`*.mp4`) are not supported.

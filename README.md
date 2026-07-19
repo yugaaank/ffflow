@@ -1,97 +1,100 @@
-# ffflow (ffmpeg Flow)
+# ffflow
 
-**ffflow** is a powerful, open-source terminal user interface (TUI) for FFmpeg. It is designed to streamline professional media workflows by providing a clean, interactive surface for running complex encoding, probing, and filtering jobs.
+`ffflow` is a CLI and TUI for building structured, repeatable ffmpeg
+workflows. Instead of retyping long ffmpeg invocations or wrangling shell
+scripts, you describe a pipeline once in a `.flw` file (or on the command
+line) and `ffflow` runs it with a live, ratatui-driven progress view — one
+track per job, real-time encoding progress, and a summary at the end.
 
-Built with **Rust**, it emphasizes reliability, observability, and ease of use for both casual users and media engineers.
+It wraps `ffmpeg` (it shells out to the binary on your `PATH`); it does not
+reimplement encoders.
 
-![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
-![Build Status](https://img.shields.io/badge/build-passing-brightgreen)
+## Why
 
-## ✨ Key Features
+Complex media commands are easy to get wrong and hard to reuse. `ffflow` gives
+the commands a name and a shape: presets for codecs, a batch format for
+multi-file jobs, and a TUI so you can watch several encodes at once instead of
+reading ffmpeg's stderr.
 
-- **Interactive TUI**: Real-time progress monitoring with speed, frame count, and time estimates.
-- **Batch Processing**: Run sequential jobs defined in simple `.flw` text files.
-- **smart Wrappers**: Simplified commands (`encode`, `probe`) for common tasks with preset support.
-- **FFmpeg Passthrough**: Full support for raw `ffmpeg` commands, including complex filtergraphs and multiline commands.
-- **Interactive Prompts**: Handles FFmpeg interactive queries (like "Overwrite? [y/N]") directly in the UI.
-- **Session History**: Scrollable history of all commands and outputs within the session.
+## Architecture
 
-## 🚀 Installation
-
-### Cargo install (Rust users)
-
-```bash
-cargo install ffflow
+```
+ffflow/
+├── main.rs        entry; parse args, load .flw, hand off to tui::run
+├── cli.rs         clap parser: top-level FILE + Encode/Probe/Presets
+├── repl.rs        line parser (parse_line) for .flw batch files
+├── tui.rs         ratatui UI + event loop
+├── core/
+│   ├── command.rs   FfmpegCommand (inputs, output, codecs, preset, extra)
+│   ├── batch.rs     parse_flw_file -> Vec<FfmpegCommand>
+│   ├── runner.rs    spawns ffmpeg, streams progress
+│   ├── progress.rs  parses ffmpeg's progress lines into a model
+│   ├── job.rs       per-job state machine
+│   ├── metadata.rs  probe output (via -f null)
+│   ├── formatter.rs render commands/presets as text
+│   ├── summary.rs   end-of-run report
+│   └── event.rs / error.rs / mod.rs
+└── util/fs.rs     path helpers
 ```
 
-### Binary
+- **Command model** — `core/command.rs` defines `FfmpegCommand` with multiple
+  inputs, an output, optional video/audio codecs, a preset, and trailing
+  `extra_args`. `cli.rs` converts the `Encode`/`Probe` args into this model.
+- **Batch files** — `core/batch.rs::parse_flw_file` reads a `.flw` file into a
+  list of commands; `cli.rs::parse_line` tokenizes each line with
+  `shell_words` and re-parses it through the same clap `Cli`, so batch syntax
+  is identical to CLI syntax.
+- **Execution + progress** — `core/runner.rs` spawns `ffmpeg` per job and
+  `core/progress.rs` interprets ffmpeg's `out=…` / `frame=…` / `fps=…` progress
+  output into per-job state that the TUI renders. `core/metadata.rs` uses
+  `ffmpeg -f null` to probe a file.
 
-Just download → run.
+## Installation
 
-## 📖 Usage
+Requires a Rust toolchain and a working `ffmpeg` on your `PATH`.
 
-Start the TUI:
 ```bash
-ffflow
+cargo build --release
+# binary at target/release/ffflow
 ```
 
-### Basic Commands
-Inside the TUI, you can type commands just like in a shell:
+## Usage
 
-- **Encode Wrapper**:
-  ```bash
-  encode -i input.mp4 -o output.mp4 --vcodec libx264 --preset fast
-  ```
-- **Probe Wrapper**:
-  ```bash
-  probe -i input.mp4
-  ```
-- **Raw FFmpeg**:
-  ```bash
-  ffmpeg -i input.mp4 -c:v libx265 -crf 28 output.mp4
-  ```
+Encode with explicit inputs/output and a preset:
 
-### Batch Processing (`.flw` files)
-Create a workflow file (e.g., `jobs.flw`) to run multiple commands in sequence.
-
-**Example `jobs.flw`:**
 ```bash
-# Convert to simple MP4
-ffmpeg -i raw.mov -c:v libx264 -c:a aac output.mp4
-
-# Extract Audio
-ffmpeg -i raw.mov -vn -c:a libmp3lame audio.mp3
-
-# Complex Filtergraph (Multiline supported with \)
-ffmpeg -i input.mp4 \
-       -vf "scale=1280:720,format=gray" \
-       -c:v libx264 bw_720p.mp4
+ffflow encode -i input.mov -o out.mp4 --vcodec libx264 --preset veryfast
+ffflow encode -i a.mov -i b.mov -o merged.mp4 --extra-args "-filter_complex concat"
 ```
 
-**Run it:**
-From the terminal:
+Probe a file (runs `ffmpeg -f null`):
+
 ```bash
-ffflow jobs.flw
-```
-Or interactively inside `ffflow`:
-```bash
-batch jobs.flw
+ffflow probe -i input.mov
 ```
 
-## ⚡ Interactive Input
-`ffflow` intelligently detects when FFmpeg asks for confirmation (e.g., file overwrite) and allows you to respond with `y` or `n` directly from the TUI, preventing jobs from hanging in the background.
+List built-in presets:
 
-## ⚠️ Known Limitations
-- **Shell Features**: Piping (`|`), redirection (`>`), and globbing (`*.mp4`) are not supported.
-- **Complex Prompts**: Only standard overwrite prompts are currently interactive. Password prompts may hang.
+```bash
+ffflow presets
+```
 
-## 🤝 Contributing
-We welcome contributions! This project is FOSS and we believe in community-driven development.
-1. Fork the repo.
-2. Create feature branch (`git checkout -b feature/amazing-feature`).
-3. Commit changes (`git commit -m 'Add amazing feature'`).
-4. Push to branch (`git push origin feature/amazing-feature`).
-5. Open a Pull Request.
+Batch mode via a `.flw` file — each line is a normal `ffflow` command:
 
-## 📜 License
-Distributed under the MIT License. See `LICENSE` for more information.
+```bash
+ffflow pipeline.flw
+```
+
+```text
+# pipeline.flw
+encode -i clip1.mov -o clip1.mp4 --preset fast
+encode -i clip2.mov -o clip2.mp4 --preset fast
+encode -i clip1.mp4 -i clip2.mp4 -o final.mp4 --extra-args "-c copy"
+```
+
+Running `ffflow` (or `ffflow <file>`) opens the TUI, which shows one progress
+track per job and a summary when all jobs finish.
+
+## License
+
+MIT

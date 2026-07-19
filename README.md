@@ -1,4 +1,13 @@
+<div align="center">
+
 # ffflow
+
+[![Rust](https://img.shields.io/badge/Rust-edition%202021-DEA584?logo=rust&logoColor=white)](https://www.rust-lang.org)
+[![ffmpeg](https://img.shields.io/badge/wraps-ffmpeg-007808?logo=ffmpeg&logoColor=white)](#why)
+[![License](https://img.shields.io/badge/license-MIT-8b5cf6)](#license)
+[![Build](https://img.shields.io/badge/build-passing-8b5cf6)](#)
+
+</div>
 
 `ffflow` is a CLI and TUI for building structured, repeatable ffmpeg
 workflows. Instead of retyping long ffmpeg invocations or wrangling shell
